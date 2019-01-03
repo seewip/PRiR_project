@@ -157,7 +157,7 @@ __device__ bool cehckIfHasFloodedNeighbour(bool* isPixelFlooded, long xSize, lon
 	long xEnd=1;
 	long yStart=-1;
 	long yEnd=1;
-	return true;
+
 	if(xCoord == 0) xStart = 0;
 	else if(xCoord == xSize-1) xEnd = 0;
 	if(yCoord == 0) yStart = 0;

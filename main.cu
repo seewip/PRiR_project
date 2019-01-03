@@ -187,15 +187,14 @@ __global__ void makeWatershade(unsigned char* differenceImage, bool* isPixelFloo
     {
         while(yCoord < ySize)
         {
-        	isPixelFlooded[xSize*yCoord+xCoord] = true;
-//        	if(not isPixelFlooded[xSize*yCoord+xCoord] /*and differenceImage[xSize*yCoord+xCoord] <= treshold*/)
-//        	{
-//        		if(cehckIfHasFloodedNeighbour(isPixelFlooded, xSize, ySize, xCoord, yCoord))
-//        		{
-//        			isPixelFlooded[xSize*yCoord+xCoord] = true;
-//        			*hasChangedAnyPixel = true;
-//        		}
-//        	}
+        	if(not isPixelFlooded[xSize*yCoord+xCoord] /*and differenceImage[xSize*yCoord+xCoord] <= treshold*/)
+        	{
+        		if(cehckIfHasFloodedNeighbour(isPixelFlooded, xSize, ySize, xCoord, yCoord))
+        		{
+        			isPixelFlooded[xSize*yCoord+xCoord] = true;
+        			*hasChangedAnyPixel = true;
+        		}
+        	}
         	yCoord+= yAdd;
 
 	    }
@@ -281,8 +280,8 @@ __global__ void markFloodedPixels(unsigned char* imageIn, bool* isFlooded, long 
 	    }
         xCoord += xAdd;
     }
-    __syncthreads();
 }
+
 __global__ void markStartPixel(bool* isFlooded, long xSize, long x, long y)
 {
 	isFlooded[xSize*y+x] = true;

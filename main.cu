@@ -64,7 +64,30 @@ struct RGB
     int blue;
 };
 
-__global__ void makeGrayscaleImage(unsigned char* imageIn, unsigned char* imageOut, long xSize, long ySize)
+__global__ void saveGrayscaleImage(unsigned char* imageIn, unsigned char* imageOut, long xSize, long ySize)
+{
+    long xCoord = blockIdx.x * blockDim.x + threadIdx.x;
+    long yCoord = blockIdx.y * blockDim.y + threadIdx.y;
+
+    unsigned char green = 128;
+    unsigned char blue = 128;
+
+    int inputIndex, outputIndex;
+    for(long x=xCoord; x < xSize; x+=(blockDim.x * gridDim.x))
+        {
+        	for(long y=yCoord; y < ySize; y+=(blockDim.y * gridDim.y))
+            {
+                inputIndex = xSize * y + x;
+    			outputIndex = xSize * y * 3 + x * 3;
+
+    			imageOut[outputIndex + 2] = imageIn[inputIndex];
+    			imageOut[outputIndex + 1] = green;
+    			imageOut[outputIndex] = blue;
+    	    }
+        }
+}
+
+__global__ void makeGrayscaleImage(unsigned char* imageIn, unsigned char* imageOut, long xSize, long ySize, int alpha)
 {
     long xCoord = blockIdx.x * blockDim.x + threadIdx.x;
     long yCoord = blockIdx.y * blockDim.y + threadIdx.y;
@@ -85,6 +108,8 @@ __global__ void makeGrayscaleImage(unsigned char* imageIn, unsigned char* imageO
 			currentColor += imageIn[inputIndex + 2] * redWeigth;
 			currentColor += imageIn[inputIndex + 1] * greenWeigth;
 			currentColor += imageIn[inputIndex] * blueWeigth;
+			currentColor = currentColor * alpha;
+			if(currentColor > 255.0) currentColor = 255;
             imageOut[xSize * y + x] = (unsigned char)currentColor;
 	    }
     }
@@ -154,14 +179,13 @@ __device__ bool checkIfHasFloodedNeighbour(bool* isPixelFlooded, long xSize, lon
 	{
 		for(int y=yStart; y <= yEnd; y++)
 		{
-			if(xStart==0 and yStart==0) continue;
 			if(isPixelFlooded[xSize * (yCoord + y) + (xCoord + x)]) return true;
 		}
 	}
 	return false;
 }
 
-__global__ void makeWatershade(unsigned char* differenceImage, bool* isPixelFlooded, long xSize, long ySize, bool* hasChangedAnyPixel, int treshold)
+__global__ void makeWatershade(unsigned char* differenceImage, bool* isPixelFlooded, long xSize, long ySize, bool* hasChangedAnyPixel, unsigned char treshold)
 {
     long xCoord = blockIdx.x * blockDim.x + threadIdx.x;
     long yCoord = blockIdx.y * blockDim.y + threadIdx.y;
@@ -172,7 +196,7 @@ __global__ void makeWatershade(unsigned char* differenceImage, bool* isPixelFloo
     {
         for(long y=yCoord; y < ySize; y+=yAdd)
         {
-        	if(not isPixelFlooded[xSize*y+x] and differenceImage[xSize*yCoord+xCoord] <= treshold)
+        	if((not isPixelFlooded[xSize*y+x]) and (differenceImage[xSize*y+x] <= treshold))
         	{
         		if(checkIfHasFloodedNeighbour(isPixelFlooded, xSize, ySize, x, y))
         		{
@@ -183,6 +207,22 @@ __global__ void makeWatershade(unsigned char* differenceImage, bool* isPixelFloo
 	    }
     }
 
+}
+
+__global__ void brightenImage(unsigned char* image, long xSize, long ySize, double alpha)
+{
+    long xCoord = blockIdx.x * blockDim.x + threadIdx.x;
+    long yCoord = blockIdx.y * blockDim.y + threadIdx.y;
+    long xAdd = blockDim.x * gridDim.x;
+    long yAdd = blockDim.y * gridDim.y;
+
+    for(long x=xCoord; x < xSize; x+=xAdd)
+    {
+        for(long y=yCoord; y < ySize; y+=yAdd)
+        {
+        	image[xSize*y+x] = image[xSize*y+x] * alpha;
+	    }
+    }
 }
 
 __global__ void makeGaussianBlur(unsigned char* imageIn, unsigned char* imageOut, long xSize, long ySize)
@@ -199,18 +239,18 @@ __global__ void makeGaussianBlur(unsigned char* imageIn, unsigned char* imageOut
     long xAdd = blockDim.x * gridDim.x;
     long yAdd = blockDim.y * gridDim.y;
 
-    while(xCoord <= 1)
+    while(xCoord < 2)
     {
         xCoord += xAdd;
     }
-    while(yCoord <= 1)
+    while(yCoord < 2)
     {
         yCoord += yAdd;
     }
     
     long inputIndex, outputIndex;
-    unsigned char currentColor;
-    
+    int currentColor;
+    double divide;
     //blur grayscale image
     for(long x=xCoord; x < xSize-2; x+=xAdd)
     {
@@ -223,11 +263,13 @@ __global__ void makeGaussianBlur(unsigned char* imageIn, unsigned char* imageOut
 		        for (int j = 0; j<5; j++)
                 {
 			        inputIndex = xSize*(y + i - 2) + (x + j - 2);
-			        currentColor += imageIn[inputIndex] * gaussianMask[j][i];
+			        currentColor += imageIn[inputIndex] * gaussianMask[i][j];
 		        }
 	        }
             outputIndex = xSize * y + x;
-            imageOut[outputIndex] = currentColor / maskSum;
+            divide = currentColor / maskSum;
+            if(divide > 255.0) divide = 255;
+            imageOut[outputIndex] = divide;
         }
     }
 }
@@ -297,32 +339,39 @@ void ImageManager::performWatershade()
     HANDLE_ERROR(cudaMalloc((void**)& cudaInputImage, cudaInputImageSize));
     HANDLE_ERROR(cudaMemcpy(cudaInputImage, inputImage.data, cudaInputImageSize, cudaMemcpyHostToDevice));
     
-    unsigned char* cudaGrayscaleImage;
-    HANDLE_ERROR(cudaMalloc((void**)& cudaGrayscaleImage, cudaGrayscaleImageSize));
+
 
     //Make grayscale from image
-    makeGrayscaleImage << < grid, block >> > (cudaInputImage, cudaGrayscaleImage, inputImage.cols, inputImage.rows);
-    
-    cudaDeviceSynchronize();
-    
-    unsigned char* cudaBlurredImage;
-    HANDLE_ERROR(cudaMalloc((void**)& cudaBlurredImage, cudaGrayscaleImageSize));
-    
-    //Perform Gaussian blur
-    makeGaussianBlur << < grid, block >> > (cudaGrayscaleImage, cudaBlurredImage, inputImage.cols, inputImage.rows);
-    
-    cudaDeviceSynchronize();
+    unsigned char* cudaGrayscaleImage;
+    HANDLE_ERROR(cudaMalloc((void**)& cudaGrayscaleImage, cudaGrayscaleImageSize));
+    makeGrayscaleImage << < grid, block >> > (cudaInputImage, cudaGrayscaleImage, inputImage.cols, inputImage.rows, 1);
 
+	cudaDeviceSynchronize();
+
+	//Perform Gaussian blur
+	unsigned char* cudaBlurredImage;
+	HANDLE_ERROR(cudaMalloc((void**)& cudaBlurredImage, cudaGrayscaleImageSize));
+    makeGaussianBlur << < grid, block >> > (cudaGrayscaleImage, cudaBlurredImage, inputImage.cols, inputImage.rows);
+    cudaDeviceSynchronize();
+    
     HANDLE_ERROR(cudaFree(cudaGrayscaleImage));
-    unsigned char* cudaDifferenceImage;
-    HANDLE_ERROR(cudaMalloc((void**)& cudaDifferenceImage, cudaGrayscaleImageSize));
     
     //Make difference image (dilatated image - eroded image)
+    unsigned char* cudaDifferenceImage;
+    HANDLE_ERROR(cudaMalloc((void**)& cudaDifferenceImage, cudaGrayscaleImageSize));
     makeDifferenceImage<< < grid, block >> >(cudaBlurredImage, cudaDifferenceImage, inputImage.cols, inputImage.rows);
     
     cudaDeviceSynchronize();
-
     HANDLE_ERROR(cudaFree(cudaBlurredImage));
+
+
+
+    //TU DZIALA
+
+    brightenImage<< < grid, block >> >(cudaDifferenceImage, inputImage.cols, inputImage.rows, 3);
+   /* saveGrayscaleImage<< < grid, block >> >(cudaDifferenceImage, cudaInputImage, inputImage.cols, inputImage.rows);
+    HANDLE_ERROR(cudaMemcpy(outputImage.data, cudaInputImage, cudaInputImageSize, cudaMemcpyDeviceToHost));
+    */
 
     bool* isFlooded;
     long cudaBooleanImageSize = sizeof(bool) * inputImage.rows * inputImage.cols;
@@ -333,13 +382,12 @@ void ImageManager::performWatershade()
 
     bool hostHasBeenChanged;
     HANDLE_ERROR(cudaMemset(isFlooded, 0, cudaBooleanImageSize));
+
     markStartPixel<<<1,1>>>(isFlooded, inputImage.cols, startPixel.width, startPixel.heigth);
     cudaDeviceSynchronize();
 
-    int iteration = 0;
     do
     {
-    	cout << "Iteracja: " << iteration++ << endl;
     	hostHasBeenChanged = false;
     	HANDLE_ERROR(cudaMemcpy(hasAnyPixelBeenChanged, &hostHasBeenChanged, sizeof(bool), cudaMemcpyHostToDevice));
     	makeWatershade<< < grid, block >> >(cudaDifferenceImage, isFlooded, inputImage.cols, inputImage.rows, hasAnyPixelBeenChanged, treshold);
@@ -347,7 +395,6 @@ void ImageManager::performWatershade()
     	HANDLE_ERROR(cudaMemcpy(&hostHasBeenChanged, hasAnyPixelBeenChanged, sizeof(bool), cudaMemcpyDeviceToHost));
     }while(hostHasBeenChanged);
 
-    cout << "After flooding" << endl;
 	HANDLE_ERROR(cudaFree(cudaDifferenceImage));
 
 	markFloodedPixels<< < grid, block >> >(cudaInputImage, isFlooded, inputImage.cols, inputImage.rows);
@@ -356,12 +403,12 @@ void ImageManager::performWatershade()
     cudaEventSynchronize(stopTime);
     cudaEventElapsedTime(&runningTime, startTime, stopTime);
 
-
     HANDLE_ERROR(cudaMemcpy(outputImage.data, cudaInputImage, cudaInputImageSize, cudaMemcpyDeviceToHost));
 
     cudaFreeHost(hasAnyPixelBeenChanged);
     cudaFree(cudaInputImage);
     cudaFree(isFlooded);
+
 }
 
 void ImageManager::saveImage(string outputPath)
@@ -438,7 +485,6 @@ int main(int argc, char** argv) {
 
     Coords imgSize = imageManager->readImage(inputPath);
 
- /*
     Coords startCoords{0, 0};
     cout << "Rozmiar obrazka (szer, wys): " << imgSize.width << ", " << imgSize.heigth << ". Podaj piksel startowy (x, y): ";
     cin >> startCoords.width;
@@ -458,13 +504,6 @@ int main(int argc, char** argv) {
     cout << "Podaj rozmiar gridu (dlugosc jednego boku, rzeczywisty rozmiar bedzie wynosil kwadrat z podanej liczby): ";
     cin >> size;
     imageManager->setGridSize(size);
-    
- */
-    Coords startCoords{100, 100};
-    imageManager->setStartPixel(startCoords);
-    imageManager->setTreshold(0);
-    imageManager->setBlockSize(10);
-    imageManager->setGridSize(10);
 
     cout << "grid size, block size, time" << endl;
 
